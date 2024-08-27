@@ -1,341 +1,28 @@
-using DataModels.Entity;
-using DataModels.Model;
-using Email_Integration.DataLayer;
-using Email_Integration.Services;
-using Nest;
-using System;
-using System.Text;
-using System.Threading.Tasks;
-
-namespace Email_Integration.BusinessLayer
-{
-    public interface IEmailManager
-    {
-        object GetAll(string filter, Guid id);
-        ResponseModel ValidateOtp(ValidateOtp otpModel);
-        Task<string> GetEmailDetailsByTrackingIdAsync(string trackingId);
-        void SendEmail(Email model, Users loginUser);
-        void SendOtp(string email);
-        public int GenerateRandomOtp();
-        ResponseModel StatusUpdate(EmailStatusUpdate obj, Users loginUser);
-    }
-    public class EmailManager : IEmailManager
-    {
-
-        private readonly EmailService _emailService;
-        private readonly OtpService _otpService;
-        public EmailManager(EmailService emailService,OtpService otpService)
-        {
-            _emailService = emailService;
-            _otpService = otpService;
-        }
-
-        public object GetAll(string filter, Guid id)
-        {
-
-            if (filter != null)
-            {
-                filter = Encoding.UTF8.GetString(Convert.FromBase64String(filter));
-            }
-            else
-            {
-                filter = "{}";
-            }
-            return _emailService.GetAll(filter, id);
-        }
-
-        public Task<string> GetEmailDetailsByTrackingIdAsync(string trackingId)
-        {
-            return _emailService.GetEmailDetailsByTrackingIdAsync(trackingId);
-        }
-
-        public void SendEmail(Email email, Users loginUser)
-        {
-            _emailService.SendEmail(email, loginUser);
-        }
-
-        public void SendOtp(string email, Users loginUser)
-        {
-            _otpService.SendOtp(email, loginUser);
-        }
-
-        public ResponseModel StatusUpdate(EmailStatusUpdate obj, Users loginUser)
-        {
-            return _emailService.StatusUpdate(obj, loginUser);
-        }
-
-        public ResponseModel ValidateOtp(ValidateOtp otpModel)
-        {
-             return _otpService.ValidateOtp(otpModel);
-
-        }
-        public int GenerateRandomOtp()
-        {
-            var random = new Random();
-            return random.Next(100000,1000000);
-        }
-    }
-}
-using App_Logger;
-using BusinessLayer.Interface;
-using DataModels.Entity;
-using DataModels.Model;
-using Email_Integration.BusinessLayer;
-using Microsoft.AspNetCore.Http;
-using Microsoft.AspNetCore.Mvc;
-using System;
-using System.Threading.Tasks;
-
-namespace HCSAPI.Controller
-{
-    [Route("api/[controller]")]
-    [ApiController]
-    public class EmailController : ControllerBase
-    {
-        protected Users loginUser;
-        private readonly IEmailManager _EmailManager;
-        public EmailController(IEmailManager EmailManager, IHttpContextAccessor httpContextAccessor)
-        {
-            _EmailManager = EmailManager;
-            loginUser = (Users)httpContextAccessor.HttpContext.Items["User"];
-        }
-
-        [Authorize]
-        [HttpPost("StatusUpdate")]
-        public IActionResult StatusUpdate(EmailStatusUpdate data)
-        {
-            ResponseModel response = new ResponseModel();
-            try
-            {
-                response = _EmailManager.StatusUpdate(data, loginUser);
-            }
-            catch (Exception ex)
-            {
-                response.Success = false;
-                response.Message = ex.Message;
-                AppLogger.Error(typeof(NonAvailability).Name, ex.Message, ex, loginUser.Email);
-            }
-
-            return Ok(response);
-        }
-
-
-        [HttpPost("email-webhook")]
-        public async Task<IActionResult> Post([FromBody] BrevoWebhookPayload payload)
-        {
-            if (payload == null)
-            {
-                return BadRequest("Invalid payload");
-            }
-
-            // Handle different events
-            switch (payload.Event)
-            {
-                case "delivered":
-                    // Handle delivered event
-                    break;
-
-                case "opened":
-                    break;
-
-                case "clicked":
-                    break;
-
-                case "bounced":
-                    break;
-
-                default:
-
-                    break;
-            }
-            return Ok();
-        }
-        [HttpPost("send-email")]
-        public void SendEmail(Email email)
-        {
-            _EmailManager.SendEmail(email, loginUser);
-        }
-
-
-        [HttpGet("GetAll")]
-        public IActionResult GetAll(string filter = null)
-        {
-            ResponseModel response = new ResponseModel();
-            try
-            {
-                response.Data = _EmailManager.GetAll(filter, loginUser.Id);
-            }
-            catch (Exception ex)
-            {
-                response.Success = false;
-                response.Message = ex.Message;
-                AppLogger.Error("Email", ex.Message, ex, loginUser.Email);
-            }
-
-            return Ok(response);
-        }
-        [HttpPost("sendOtp")]
-        public void SendOtp(string email)
-        {
-            _EmailManager.SendOtp(email);
-        }
-        [HttpPost("ValidateOtp")]
-        public IActionResult ValidateOtp(ValidateOtp otpModel)
-        {
-
-            ResponseModel response = new ResponseModel();
-            try
-            {
-                response.Data = _EmailManager.ValidateOtp(otpModel);
-            }
-            catch (Exception ex)
-            {
-                response.Success = false;
-                response.Message = ex.Message;
-            }
-
-            return Ok(response);
-        }
-        [HttpGet("GenerateOtp")]
-        public IActionResult GenerateOtp()
-        {
-            var otp =_EmailManager.GenerateRandomOtp();
-            return Ok(otp);
-        }
-    }
-}
-
-
-
-using Dapper;
-using Datalayer.Dapper;
-using DataModels.Entity;
-using DataModels.Enum;
-using DataModels.Model;
-using Microsoft.Extensions.Options;
-using sib_api_v3_sdk.Api;
-using sib_api_v3_sdk.Model;
-using System;
-using System.Collections.Generic;
-using System.Net.Http;
-using System.Net.Http.Headers;
-using System.Threading.Tasks;
-
-namespace Email_Integration.Services
-{
-    public class EmailService : DapperBuilderBase<Email>
-    {
-        private readonly EmailSettings _emailSettings;
-        private readonly HttpClient _httpClient;
-        public EmailService(IOptions<EmailSettings> emailSettings)
-        {
-            SaveMapper = new Dictionary<string, string>
-            {
-               // fill mapper			
-               {"@Id", "Id"},
-               {"@UserId", "UserId"},
-               {"@SentTo", "SentTo"},
-               {"@CC", "CC"},
-               {"@BCC", "BCC"},
-               {"@Status", "Status"},
-               {"@ResponseRecieved", "ResponseRecieved"},
-               {"@EmailSentDate", "EmailSentDate"},
-               {"@SenderName", "SenderName"},
-               {"@FromEmail", "FromEmail"},
-               {"@Subject", "Subject"},
-               {"@Body", "Body"},
-               {"@TryCount", "TryCount"},
-               {"@NotificationTrackingID", "NotificationTrackingID"}
-            };
-            _emailSettings = emailSettings.Value;
-            EmailSettings settings = new EmailSettings();
-            _httpClient = new HttpClient();
-            _httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Bearer", settings.ApiKey);
-
-        }
-
-        public async void SendEmail(Email model, Users loginUser)
-        {
-            var apiInstance = new TransactionalEmailsApi();
-            apiInstance.Configuration.ApiKey.TryAdd("api-key", _emailSettings.ApiKey); // Set the API key for authentication
-
-            SendSmtpEmailSender sender = new SendSmtpEmailSender(_emailSettings.SenderName, _emailSettings.SenderEmail);
-            SendSmtpEmailTo receiver1 = new SendSmtpEmailTo(model.SentTo, model.CC);
-            List<SendSmtpEmailTo> To = new List<SendSmtpEmailTo>();
-            To.Add(receiver1);
-            model.Status = (int)EmailStatus.NEW;
-            Save(model, loginUser);
-            string HtmlContent = null;
-            string TextContent = model.Body;
-
-            try
-            {
-                var sendSmtpEmail = new SendSmtpEmail(sender, To, null, null, HtmlContent, TextContent, model.Subject);
-                CreateSmtpEmail result = apiInstance.SendTransacEmail(sendSmtpEmail);
-                model.NotificationTrackingID = result.MessageId;
-                model.Status = (int)EmailStatus.IN_PROGRESS;
-                Save(model, loginUser);
-            }
-            catch (Exception e)
-            {
-                model.Status = (int)EmailStatus.FAILED;
-                Save(model, loginUser);
-                throw;
-            }
-        }
-       
-        public async Task<string> GetEmailDetailsByTrackingIdAsync(string trackingId)
-        {
-            string url = $"{_emailSettings.BaseUrl}/v3/smtp/statistics/events?messageId={trackingId}";
-
-            try
-            {
-                var request = new HttpRequestMessage(HttpMethod.Get, url);
-                request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", _emailSettings.ApiKey); // Ensure the API key is added to this request
-                var response = await _httpClient.GetAsync(url);
-                response.EnsureSuccessStatusCode();
-
-                var content = await response.Content.ReadAsStringAsync();
-                return content;
-            }
-            catch (HttpRequestException e)
-            {
-                Console.WriteLine($"Request error: {e.Message}");
-                return null;
-            }
-        }
-
-        public ResponseModel StatusUpdate(EmailStatusUpdate obj, Users loginUser)
-        {
-            var procName = "prEmailStatusUpdate";
-            var param = new DynamicParameters();
-            param.Add("@Id", obj.Id);
-            param.Add("@NotificationTrackingId", obj.NotificationTrackingId);
-            param.Add("@EmailStatus", obj.Status);
-            param.Add("@UpdatedOn", DateTime.UtcNow);
-            param.Add("@UpdatedBy", loginUser.Id);
-            return ExecuteStoredProcedure(procName, param);
-        }
-    }
-}
 using Balivo.SendInBlue;
 using Dapper;
 using Datalayer.Dapper;
+using Datalayer.Services;
 using DataModels.Entity;
 using DataModels.Model;
 using Email_Integration.BusinessLayer;
 using Email_Integration.Services;
+using Nest;
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Threading.Tasks;
 
 namespace Email_Integration.DataLayer
 {
     public class OtpService : DapperBuilderBase<OtpModel>
     {
         private readonly EmailService _emailService;
+        private readonly UsersService _usersService;
+       
+
         public OtpService()
         {
+           
             SaveMapper = new Dictionary<string, string>
             {
                // fill mapper			
@@ -345,25 +32,29 @@ namespace Email_Integration.DataLayer
             };
         }
        
-        public async void SendOtp(string email, Users loginUser)
+        public async Task SendOtp(string email, Users loginUser)
         {
-            //generate or get otp from  generate otp method
-            var otp = 123321;
+            // generating otp 
+            // var otp = _emailService.GenerateRandomOtp();
+            var otp = 123232;
+            //Users loginUser = new Users();
+          await   loginUser = _usersService.GetByEmailID(email);
+           
 
-            // save otp email to otp details 
+            // saving otp details 
+          await  Save(new OtpModel { Email = email, Otp = otp, SendTime = DateTime.UtcNow },loginUser);
 
+            // Building Email to send otp
+            var emailModel = new Email
+            {
+                Subject = "Otp Verification",
+                Body = $"Your Otp for Reset password link is {otp}. Please Dont Share it with anyone",
+                SentTo = email
+            };
+            //sending email 
+            await _emailService.SendEmail(emailModel, loginUser);
 
-
-            // build email 
-            Email emailmodel = new Email();
-            emailmodel.Subject = "Otp verification at mindmeadow.in";
-            emailmodel.Status = 0;
-            emailmodel.SentTo = email;
-            emailmodel.BCC = email;
-            emailmodel.CC = email;
-            emailmodel.Body = "Your Otp is @otp";
-            //send mail
-            _emailService.SendEmail(emailmodel,loginUser);
+           
         }
         public ResponseModel ValidateOtp(ValidateOtp otpModel)
         {
@@ -373,26 +64,6 @@ namespace Email_Integration.DataLayer
             param.Add("@Otp", otpModel.Otp);
             return ExecuteStoredProcedure(procName, param);
         }
-
-    }
-}
-using System;
-using System.Collections.Generic;
-using System.Text;
-
-namespace DataModels.Model
-{
-    public class OtpModel
-    {
-        public string Email { get; set; }
-        public int Otp { get; set; }
-        public DateTime? SendTime { get; set; }
-       
-    }
-    public class ValidateOtp
-    {
-        public string Email { get; set; }
-        public int Otp { get; set; }
 
     }
 }
